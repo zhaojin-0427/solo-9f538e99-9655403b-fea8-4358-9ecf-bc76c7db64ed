@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 data/
+RESTORE_DIR/
+# 运行时数据与恢复中间状态；samples/ 下的示例备份需纳入版本库
+*.db-wal
+*.db-shm
+.geosync-recovery/

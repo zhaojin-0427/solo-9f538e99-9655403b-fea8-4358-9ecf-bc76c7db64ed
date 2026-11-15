@@ -1,0 +1,72 @@
+{
+  "kind": "geosync-offline-backup",
+  "created_at": "2026-11-15T02:30:00+08:00",
+  "note": "演示用停机备份：作业库与分析库同一次停机保全；含待同步更正",
+  "files": {
+    "source": {
+      "name": "source.db",
+      "sha256": "fd8acc78a13359b69b619442180c57cba3633951549f8be8e6a79fa496e8cd40",
+      "size": 36864
+    },
+    "target": {
+      "name": "target.db",
+      "sha256": "2bc5b3f2c15dce7a921b0111062839c648f7d85177531683dd9fb4a48532de28",
+      "size": 24576
+    }
+  },
+  "watermarks": {
+    "source_max_tx": 8,
+    "target_last_tx_id": 6,
+    "target_high_water": 2
+  },
+  "counts": {
+    "source": {
+      "samples": 20,
+      "results": 91,
+      "txs": 8
+    },
+    "target": {
+      "samples": 20,
+      "results": 92
+    }
+  },
+  "pending_corrections": [
+    {
+      "tx_id": 7,
+      "sample_no": "YT-0005",
+      "new_site": "ZK-001-R628",
+      "adds": [
+        {
+          "item": "Ag",
+          "value": 39.976
+        },
+        {
+          "item": "Pb",
+          "value": 2.308
+        }
+      ],
+      "dels": [
+        "Cu"
+      ]
+    },
+    {
+      "tx_id": 8,
+      "sample_no": "YT-0014",
+      "new_site": "ZK-011-R138",
+      "adds": [
+        {
+          "item": "Ag",
+          "value": 13.652
+        },
+        {
+          "item": "Fe",
+          "value": 7.907
+        }
+      ],
+      "dels": [
+        "Pb",
+        "Ag"
+      ]
+    }
+  ]
+}

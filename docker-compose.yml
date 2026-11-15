@@ -11,16 +11,25 @@ services:
       #   docker compose restart   或   docker compose kill && docker compose up -d
       - source-data:/data/source
       - target-data:/data/target
+      # 恢复页上传的备份暂存区（不含任何业务库，可随时丢弃）
+      - restore-staging:/data/restore-staging
     environment:
       SOURCE_DB: /data/source/source.db
       TARGET_DB: /data/target/target.db
+      DATA_DIR: /data
+      RESTORE_DIR: /data/restore-staging
       SYNC_POLL_INTERVAL: "0.5"
       AUTO_CORRECT_INTERVAL: "2.5"
       SEED_SAMPLES: "20"
-      # SYNC_SNAPSHOT_DELAY_MS 为测试钩子，生产保持 0
-      SYNC_SNAPSHOT_DELAY_MS: "0"
+      # 以下均为测试钩子，生产保持默认：
+      # SYNC_SNAPSHOT_DELAY_MS: "0"
+      # RESTORE_VERIFY_DELAY_MS: "0"
+      # RESTORE_FAIL_AFTER: ""
+      # RESTORE_PAUSE_AFTER: ""
+      # RESTORE_PAUSE_MS: "0"
     restart: unless-stopped
 
 volumes:
   source-data:
   target-data:
+  restore-staging:

@@ -45,6 +45,7 @@
 <header>
   <h1>地质化验数据同步平台</h1>
   <span class="sub">作业库（source.db）→ 分析库（target.db） · 首次全量 + 有序增量 · 事务级一致</span>
+  <a href="/restore" style="color:var(--acc);font-size:12.5px;text-decoration:none;margin-left:auto">停机备份恢复 →</a>
 </header>
 <main>
   <section class="card">
@@ -70,6 +71,7 @@
     <div class="row">
       <button id="btnAuto" class="ghost">自动更正：关</button>
       <button id="btnFault" class="danger">注入下一次目标写入失败</button>
+      <a href="/restore" style="color:var(--acc);font-size:12.5px;text-decoration:none;margin-left:6px">停机备份恢复 →</a>
     </div>
     <p class="mut" style="margin:8px 0 0">
       更正在源端一笔事务内完成（改样品 + 增删多条结果）；全量完成后才开放下方关联明细查询；
@@ -129,6 +131,18 @@ async function api(path, opts){
 }
 async function refresh(){
   const s = await api('/api/status');
+  if (s.paused || s.status === 503){
+    // 停机备份恢复切换窗口：业务暂时暂停，稍后自动恢复
+    const ph0 = $('phase');
+    ph0.textContent = '停机恢复切换中（操作已暂停）';
+    ph0.className = 'badge b-full';
+    $('lastErr').textContent = s.message || '恢复切换进行中';
+    $('btnFull').disabled = true; $('btnCorrect').disabled = true;
+    $('btnAuto').disabled = true; $('btnFault').disabled = true;
+    return;
+  }
+  $('btnCorrect').disabled = false; $('btnAuto').disabled = false;
+  $('btnFault').disabled = false;
   const ph = $('phase');
   ph.textContent = {idle:'待发起全量', full_running:'全量同步中', ready:'增量同步中'}[s.phase] || s.phase;
   ph.className = 'badge ' + (s.phase==='ready'?'b-ready':s.phase==='full_running'?'b-full':'b-idle');

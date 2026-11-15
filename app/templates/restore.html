@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>停机备份恢复 · 作业库 / 分析库</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --line:#334155; --fg:#e2e8f0; --mut:#94a3b8;
+          --ok:#22c55e; --warn:#eab308; --bad:#ef4444; --acc:#38bdf8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.55 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .sub { color:var(--mut); font-size:12px; }
+  header a { color:var(--acc); font-size:12.5px; text-decoration:none; }
+  main { padding:18px 22px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:14px; color:var(--acc); letter-spacing:.5px; }
+  .grid2 { display:grid; grid-template-columns:auto 1fr; gap:5px 14px; font-size:13px; }
+  .grid2 .k { color:var(--mut); }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .b-ready{ background:var(--ok); color:#052e12; } .b-idle{ background:#475569; color:#fff; }
+  .b-warn{ background:var(--warn); color:#111; } .b-bad{ background:#7f1d1d; color:#fecaca; }
+  .b-ok{ background:#14532d; color:#86efac; }
+  button { background:var(--acc); color:#082f49; border:0; border-radius:8px; padding:8px 14px;
+           font-weight:600; cursor:pointer; margin:4px 6px 4px 0; }
+  button:disabled { background:#475569; color:#94a3b8; cursor:not-allowed; }
+  button.danger { background:#f97316; color:#431407; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); }
+  input[type=file] { color:var(--fg); font-size:12.5px; }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:0 0 12px; }
+  legend { color:var(--mut); font-size:12px; padding:0 6px; }
+  .err { color:var(--bad); font-size:12.5px; word-break:break-all; }
+  .ok { color:var(--ok); }
+  .warn { color:var(--warn); }
+  .mut { color:var(--mut); }
+  ul.checks { margin:6px 0 0; padding-left:20px; font-size:12.5px; }
+  ul.checks li { margin:2px 0; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th,td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:left; vertical-align:top; }
+  th { color:var(--mut); font-weight:600; }
+  #toast { position:fixed; right:18px; bottom:18px; background:#0b1220; border:1px solid var(--line);
+           border-radius:10px; padding:10px 14px; max-width:460px; display:none; font-size:13px; }
+  .bar { height:8px; border-radius:6px; background:#0b1220; overflow:hidden; margin:6px 0; }
+  .bar > i { display:block; height:100%; width:0; background:var(--acc); transition:width .15s; }
+</style>
+</head>
+<body>
+<header>
+  <h1>停机备份恢复</h1>
+  <span class="sub">上传本应用同次停机保存的 source.db / target.db · 校验不影响在线业务 · 确认后整体启用两份备份</span>
+  <a href="/">← 返回同步控制台</a>
+</header>
+<main>
+  <section class="card">
+    <h2>当前库水位（在线）</h2>
+    <div class="grid2">
+      <span class="k">存储状态</span><span id="liveStorage">-</span>
+      <span class="k">业务闸门</span><span id="pausedFlag">-</span>
+      <span class="k">作业库最新事务</span><span id="liveSrcMax">-</span>
+      <span class="k">分析库阶段</span><span id="livePhase">-</span>
+      <span class="k">分析库水位 last_tx_id</span><span id="liveLast">-</span>
+      <span class="k">快照水位 high_water</span><span id="liveHw">-</span>
+      <span class="k">库存世代 generation</span><span id="liveGen">-</span>
+    </div>
+    <p class="mut" style="margin:8px 0 0;font-size:12px">
+      校验期间原系统保持可用；确认替换时会短暂暂停新更正、查询与同步，
+      待已受理操作结束后整体换入两份备份，随后按备份进度增量接续。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>1. 上传停机备份并校验</h2>
+    <form id="upForm">
+      <fieldset>
+        <legend>作业库 source.db（必选）</legend>
+        <input type="file" name="source_db" accept=".db,application/octet-stream" required>
+      </fieldset>
+      <fieldset>
+        <legend>分析库 target.db（必选）</legend>
+        <input type="file" name="target_db" accept=".db,application/octet-stream" required>
+      </fieldset>
+      <fieldset>
+        <legend>restore.json 清单（可选，随附示例备份提供校验和）</legend>
+        <input type="file" name="restore_json" accept=".json,application/json">
+      </fieldset>
+      <button type="submit" id="btnUpload">上传并校验</button>
+      <button type="button" class="ghost" id="btnCancel" disabled>丢弃候选备份</button>
+    </form>
+    <div id="uploadMsg" style="margin-top:8px"></div>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
+    <h2>2. 校验结果与水位确认</h2>
+    <div id="reportBox" class="mut">尚未上传备份。</div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnConfirm" class="danger" disabled>确认替换两份库</button>
+      <span id="confirmHint" class="mut"></span>
+    </div>
+    <div class="bar"><i id="confirmBar"></i></div>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
+    <h2>恢复状态（持久化，可查可重试）</h2>
+    <div class="grid2">
+      <span class="k">状态机</span><span id="stState">-</span>
+      <span class="k">任务号 / 校验时间</span><span id="stJob">-</span>
+      <span class="k">切换开始 / 完成</span><span id="stTimes">-</span>
+      <span class="k">切换前水位</span><span id="stBefore">-</span>
+      <span class="k">切换后水位</span><span id="stAfter">-</span>
+      <span class="k">异常 / 提示</span><span id="stError" class="err">无</span>
+    </div>
+    <p class="mut" style="margin:10px 0 0;font-size:12px">
+      状态取值：<code>none</code> 无恢复记录 · <code>verified</code> 候选已校验待确认 ·
+      <code>switching</code> 切换中 · <code>applied</code> 已启用备份 ·
+      <code>failed</code> 失败可重试 · <code>incomplete</code> 需要重启自愈 ·
+      <code>cancelled</code> 已丢弃。重启后若发现切换中断，会自动回滚为完整旧配对或完成清理，
+      绝不混用两库。
+    </p>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+function toast(msg, bad=false){
+  const t=$('toast'); t.textContent=msg;
+  t.style.borderColor = bad ? 'var(--bad)' : 'var(--ok)';
+  t.style.display='block';
+  clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none',5000);
+}
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const j = await r.json().catch(()=>({}));
+  return {status:r.status, ...j};
+}
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = n => (n===null||n===undefined) ? '-' : n;
+
+let ST = null;
+
+function renderReport(st){
+  const box = $('reportBox');
+  if (!st || !['verified','switching','applied','failed','incomplete'].includes(st.state) || !st.report){
+    box.className='mut';
+    box.textContent = st && st.state==='none' ? '尚未上传备份。'
+      : (st && st.state) ? `当前状态 ${st.state}，无可展示的校验报告。` : '尚未上传备份。';
+    $('btnConfirm').disabled = true; $('confirmHint').textContent='';
+    $('btnCancel').disabled = !(st && ['verified','failed'].includes(st.state));
+    return;
+  }
+  const r = st.report, s = r.source, t = r.target;
+  const cond = r.conditions || {};
+  const yes = b => b ? '<span class="ok">✔ 满足</span>' : '<span class="err">✘ 不满足</span>';
+  box.className='';
+  box.innerHTML = `
+    <table>
+      <thead><tr><th>项目</th><th>作业库备份 source.db</th><th>分析库备份 target.db</th></tr></thead>
+      <tbody>
+        <tr><td>文件大小</td><td>${s.size} 字节</td><td>${t.size} 字节</td></tr>
+        <tr><td>SHA-256</td><td class="mut">${esc(s.sha256)}</td><td class="mut">${esc(t.sha256)}</td></tr>
+        <tr><td>业务数据</td><td>样品 ${s.samples} · 结果 ${s.results} · 事务 ${s.txs}</td>
+            <td>样品 ${t.samples} · 结果 ${t.results}</td></tr>
+        <tr><td>水位</td><td>源端最新 tx = <b>${s.max_tx}</b></td>
+            <td>已应用 last_tx_id = <b>${t.last_tx_id}</b> · 快照 high_water = ${fmt(t.high_water)}</td></tr>
+        <tr><td>阶段</td><td class="mut">—</td><td>${esc(t.phase)}（全量完成于 ${esc(t.full_done_at||'-')}）</td></tr>
+      </tbody>
+    </table>
+    <ul class="checks" style="margin-top:10px">
+      <li>目标已完成首次全量：${yes(cond.target_first_full_done)}</li>
+      <li>目标水位不超过源水位（${t.last_tx_id} ≤ ${s.max_tx}）：${yes(cond.target_not_ahead_of_source)}</li>
+      <li>待同步日志完整：${yes(cond.pending_logs_complete)}
+          （待接续 <b>${r.pending_txs}</b> 笔）</li>
+      <li>深度对账（待同步事务重放后与源库逐行一致）：
+          ${r.deep_verified ? '<span class="ok">✔ 通过</span>'
+                            : `<span class="warn">— ${esc(r.deep_note||'未执行')}</span>`}</li>
+    </ul>
+    <p class="mut" style="margin:8px 0 0;font-size:12px">
+      确认后将整体换入两份备份，接续起点为目标备份的 last_tx_id=${t.last_tx_id}：
+      不会清库，也不会重做全量。
+    </p>`;
+  const canConfirm = ['verified','failed'].includes(st.state) && st.storage_ok && st.confirmable !== false;
+  $('btnConfirm').disabled = !canConfirm;
+  $('confirmHint').textContent = canConfirm ? ''
+      : (st.state==='switching' ? '正在切换，请稍候…'
+         : !st.storage_ok ? '存储处于未解决状态，需先重启应用自愈'
+         : '当前状态不可确认');
+  $('btnCancel').disabled = !['verified','failed'].includes(st.state);
+}
+
+function renderStatus(st){
+  $('stState').innerHTML = `<span class="badge ${
+      st.state==='applied'||st.state==='verified' ? 'b-ok' :
+      st.state==='switching' ? 'b-warn' :
+      st.state==='failed'||st.state==='incomplete' ? 'b-bad' : 'b-idle'}">${esc(st.state)}</span>`;
+  $('stJob').textContent = (st.job_id || '-') + ' / ' + (st.created_at || '-');
+  $('stTimes').textContent = (st.switch_started_at || '-') + ' / ' + (st.applied_at || '-');
+  const b = st.before, a = st.after;
+  $('stBefore').textContent = b ? `源 ${fmt(b.source_max_tx)} · 目标 ${fmt(b.last_tx_id)}（${b.phase||'-'}）` : '-';
+  $('stAfter').textContent = a ? `源 ${fmt(a.source_max_tx)} · 目标 ${fmt(a.last_tx_id)}（${a.phase||'-'}）` : '-';
+  $('stError').textContent = st.error || '无';
+  $('stError').className = st.error ? 'err' : '';
+
+  const live = st.live || {};
+  $('liveStorage').innerHTML = st.storage_ok
+      ? '<span class="badge b-ok">正常</span>'
+      : '<span class="badge b-bad">切换未解决，业务暂停</span>';
+  $('pausedFlag').innerHTML = st.paused
+      ? '<span class="badge b-warn">切换窗口：新操作暂停</span>'
+      : '<span class="badge b-idle">运行中</span>';
+  $('liveSrcMax').textContent = fmt(live.source_max_tx);
+  $('livePhase').textContent = fmt(live.phase);
+  $('liveLast').textContent = fmt(live.last_tx_id);
+  $('liveHw').textContent = fmt(live.high_water);
+  renderReport(st);
+}
+
+async function refresh(){
+  const st = await api('/api/restore/status');
+  ST = st;
+  renderStatus(st);
+  const s = await api('/api/status');
+  if (s && !s.error) $('liveGen').textContent = s.generation ?? '-';
+}
+
+$('upForm').onsubmit = async (e)=>{
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  if (!fd.get('source_db') || !fd.get('target_db')){ toast('请同时选择两份库文件', true); return; }
+  $('uploadMsg').innerHTML = '<span class="mut">正在上传并校验（原系统保持可用）…</span>';
+  $('btnUpload').disabled = true;
+  const r = await api('/api/restore/upload', {method:'POST', body:fd});
+  $('btnUpload').disabled = false;
+  if (r.ok){
+    $('uploadMsg').innerHTML = '<span class="ok">✔ 校验通过，原库未改动；请核对下方水位后确认替换。</span>';
+    toast(r.message);
+  } else {
+    const errs = (r.errors || [r.message || '校验失败']).map(x=>`<li>${esc(x)}</li>`).join('');
+    $('uploadMsg').innerHTML = `<span class="err">✘ 备份被拒绝，原库保持不变：</span>
+      <ul class="checks">${errs}</ul>`;
+    toast(r.message || '备份被拒绝', true);
+  }
+  refresh();
+};
+
+$('btnCancel').onclick = async ()=>{
+  const r = await api('/api/restore/cancel', {method:'POST'});
+  toast(r.message || r.error || '已处理', !r.ok);
+  refresh();
+};
+
+$('btnConfirm').onclick = async ()=>{
+  if (!confirm('确认用已校验的两份备份整体替换作业库与分析库？\n替换期间新更正/查询/同步会短暂暂停。')) return;
+  $('btnConfirm').disabled = true;
+  const bar = $('confirmBar'); bar.style.width='35%';
+  $('confirmHint').textContent = '切换中：暂停新操作并等待在途操作结束…';
+  const r = await api('/api/restore/confirm', {method:'POST'});
+  bar.style.width = r.ok ? '100%' : '0%';
+  if (r.ok){
+    const a = r.result.after || {};
+    toast(`恢复完成：目标水位 ${fmt(r.result.before.last_tx_id)} → ${fmt(a.last_tx_id)}`);
+    $('confirmHint').textContent = '已启用备份，同步引擎已按备份进度增量接续。';
+  } else {
+    toast(r.message || '恢复失败', true);
+    $('confirmHint').textContent = r.message || '恢复失败';
+  }
+  await refresh();
+  if (r.ok) setTimeout(()=>bar.style.width='0%', 4000);
+};
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

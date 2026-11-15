@@ -7,9 +7,9 @@
 """
 import logging
 import threading
-import time
 
 from . import source, target
+from .gate import OperationGate, OperationPaused, StorageUnavailable
 
 log = logging.getLogger("geosync.syncer")
 
@@ -47,13 +47,16 @@ class FaultInjector:
 class Syncer(threading.Thread):
     def __init__(self, source_path: str, target_path: str,
                  injector: FaultInjector, poll_interval: float = 0.5,
-                 snapshot_delay_ms: int = 0) -> None:
+                 snapshot_delay_ms: int = 0,
+                 gate: OperationGate | None = None) -> None:
         super().__init__(name="geosync-syncer", daemon=True)
         self.source_path = source_path
         self.target_path = target_path
         self.injector = injector
         self.poll_interval = poll_interval
         self.snapshot_delay_ms = snapshot_delay_ms
+        # 无闸门时行为与旧版一致；恢复页接入后共享同一闸门。
+        self.gate = gate or OperationGate()
         self._stop_event = threading.Event()
         self.last_error: str | None = None
         self.last_applied_tx: int = 0
@@ -63,18 +66,26 @@ class Syncer(threading.Thread):
 
     # ------------------------------------------------------------------ #
     def run(self) -> None:
-        state = target.get_state(self.target_path)
-        log.info("同步引擎启动：phase=%s last_tx_id=%d（按持久进度接续）",
-                 state["phase"], state["last_tx_id"])
+        try:
+            state = target.get_state(self.target_path)
+            log.info("同步引擎启动：phase=%s last_tx_id=%d（按持久进度接续）",
+                     state["phase"], state["last_tx_id"])
+        except Exception as exc:  # 存储不可用时等自愈/人工处理
+            log.error("同步引擎暂时无法读取状态，将等待存储恢复: %s", exc)
         while not self._stop_event.is_set():
             try:
-                state = target.get_state(self.target_path)
-                if state["phase"] == target.PHASE_FULL:
-                    self._do_full_sync()
-                elif state["phase"] == target.PHASE_READY:
-                    self._incremental_pass()
-                else:  # idle：等待浏览器发起首次全量
-                    self._stop_event.wait(self.poll_interval)
+                # 每个轮次是一个读区段：恢复切换只会在区段之间发生，
+                # 切换后 last_tx_id 从新库读取，续传不会混用两代数据。
+                with self.gate.read("syncer"):
+                    state = target.get_state(self.target_path)
+                    if state["phase"] == target.PHASE_FULL:
+                        self._do_full_sync()
+                    elif state["phase"] == target.PHASE_READY:
+                        self._incremental_pass()
+                    else:  # idle：等待浏览器发起首次全量
+                        self._stop_event.wait(self.poll_interval)
+            except (OperationPaused, StorageUnavailable):
+                self._stop_event.wait(self.poll_interval)
             except Exception as exc:  # 任何失败都不推进进度，下轮重试
                 self.last_error = f"{type(exc).__name__}: {exc}"
                 log.error("同步异常（进度未推进，将重试）: %s", self.last_error)
@@ -93,12 +104,21 @@ class Syncer(threading.Thread):
 
     def _incremental_pass(self) -> None:
         """把 last_tx_id 之后的源端事务按提交顺序逐笔应用，直到追平。"""
+        # 本 pass 所属的存储世代：若恢复切换在途中完成，旧世代的执行者
+        # 不得继续向恢复后的库写入，立即放弃本轮并由下一轮按新库接续。
+        gen = self.gate.generation
         while not self._stop_event.is_set():
+            if self.gate.generation != gen:
+                log.warning("检测到存储已被恢复切换，放弃旧世代增量轮次")
+                return
             last = target.get_state(self.target_path)["last_tx_id"]
             txs = source.read_txs_after(self.source_path, last, limit=500)
             if not txs:
                 return
             for tx in txs:
+                if self.gate.generation != gen:
+                    log.warning("检测到存储已被恢复切换，放弃旧世代增量轮次")
+                    return
                 # 故障注入点：在目标写入前失败 -> 数据与进度均未落库
                 self.injector.maybe_fail(tx["tx_id"])
                 if target.apply_tx(self.target_path, tx):
